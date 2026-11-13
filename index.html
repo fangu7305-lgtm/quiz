@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
@@ -740,18 +740,30 @@ function isDone(rec, q){
 }
 
 /* ==================== 记录 & 统计 ==================== */
+/* 错题本：只记录「错几次 / 对几次」，不自动移出，由用户自己判断后手动删除 */
 function recordResult(q, correct){
   var m = wrongMap();
+  var cur = m[q.id];
   if (!correct){
-    var cur = m[q.id] || { n: 0, t: 0 };
-    cur.n++; cur.t = Date.now();
+    cur = cur || { n: 0, r: 0, streak: 0, t: 0 };
+    cur.n++;
+    cur.streak = 0;
+    cur.t = Date.now();
     m[q.id] = cur;
     saveWrong(m);
-  } else if (m[q.id]){
-    delete m[q.id];
-    saveWrong(m);
-    toast('已从错题本移除');
+    return;
   }
+  if (!cur) return;                     // 本来不在错题本里，答对不用记
+  cur.r = (cur.r || 0) + 1;
+  cur.streak = (cur.streak || 0) + 1;
+  cur.t = Date.now();
+  m[q.id] = cur;
+  saveWrong(m);
+  toast('答对 1 次（累计对 ' + cur.r + ' 次），觉得掌握了可以手动移除');
+}
+function dropWrong(id){
+  var m = wrongMap();
+  if (m[id]){ delete m[id]; saveWrong(m); }
 }
 
 /* ==================== 渲染：外壳 ==================== */
@@ -863,7 +875,7 @@ function renderHome(){
     '快捷键：A–D / 1–4 选项，Enter 提交，← → 切题，Esc 暂离（进度会保存）。<br>' +
     '题库来源：2024.4 市政考试题库（单选 ' + COUNT.single + ' · 多选 ' + COUNT.multi +
       ' · 填空 ' + COUNT.blank + ' · 简答 ' + COUNT.essay + '）。作答记录只存在你自己这台设备的浏览器里。<br>' +
-    '版本 <span id="buildStamp">2026-11-13 14:42</span>' +
+    '版本 <span id="buildStamp">2026-11-13 14:53</span>' +
   '</div>';
 }
 
@@ -1299,6 +1311,7 @@ function qitemHTML(q, extra){
   if (extra.my) body += '<p><span class="lb">我的答案</span><span class="my">' + esc(extra.my) + '</span></p>';
   if (q.src) body += '<p><span class="lb">出题依据</span><span class="dim">' + srcLinkHTML(q.src) + '</span></p>';
   if (extra.note) body += '<p class="dim">' + esc(extra.note) + '</p>';
+  if (extra.action) body += '<p>' + extra.action + '</p>';
   body += '</div>';
   return '<details class="qitem"><summary>' +
     '<span class="tag ' + q.kind + '">' + KLABEL[q.kind] + '</span>' +
@@ -1308,6 +1321,20 @@ function qitemHTML(q, extra){
 }
 
 /* ==================== 错题本 ==================== */
+function wrongItemHTML(q, m){
+  m = m || {};
+  var n = m.n || 0, r = m.r || 0, st = m.streak || 0;
+  var note = r > 0
+    ? '累计答对 ' + r + ' 次；觉得掌握了就手动移除'
+    : '答对会累计「对」的次数，错题不会自动消失';
+  return qitemHTML(q, {
+    st: '错 ' + n + ' · 对 ' + r,
+    stColor: st > 0 ? 'var(--warn)' : 'var(--bad)',
+    my: m.t ? '最近一次：' + new Date(m.t).toLocaleDateString('zh-CN') : '',
+    note: note,
+    action: '<button class="btn ghost sm" data-act="rmwrong" data-id="' + q.id + '">从错题本移除</button>'
+  });
+}
 function renderWrong(){
   var m = wrongMap();
   var ids = Object.keys(m).sort(function(a, b){ return (m[b].t || 0) - (m[a].t || 0); });
@@ -1328,12 +1355,8 @@ function renderWrong(){
   main.innerHTML =
   '<div class="sec-h" style="margin-top:0">错题本 · 共 ' + items.length + ' 题</div>' +
   '<div class="toolbar">' + filters + '</div>' +
-  '<div id="wrongList">' + items.map(function(x){
-      return qitemHTML(x.q, {
-        my: x.m.t ? new Date(x.m.t).toLocaleDateString('zh-CN') + ' 错过 ' + x.m.n + ' 次' : '',
-        st: '错' + x.m.n + '次', stColor: 'var(--bad)'
-      });
-    }).join('') + '</div>' +
+  '<div class="dim" style="margin:-4px 0 12px">错题会一直留在这里，答对只是累计「对」的次数；<b>复习到自己觉得没问题了，再手动移除</b>。</div>' +
+  '<div id="wrongList">' + items.map(function(x){ return wrongItemHTML(x.q, x.m); }).join('') + '</div>' +
   '<div class="foot" style="margin-top:18px">' +
     '<button class="btn primary" data-act="drillWrong">重练错题（' + items.length + '）</button>' +
     '<span class="spacer"></span>' +
@@ -1675,10 +1698,7 @@ function finishExam(auto){
     rows.push({ id: id, idx: i, section: m.section || '', got: g.got, full: g.full,
                 status: g.status, detail: g.detail, my: myAnswerText(q, r) });
     if (g.status !== 'full') recordResult(q, false);
-    else {
-      var wm = wrongMap();
-      if (wm[q.id]){ delete wm[q.id]; saveWrong(wm); }
-    }
+    else recordResult(q, true);
   });
   ses.examResult = {
     rows: rows, total: Math.round(total * 10) / 10,
@@ -1969,9 +1989,7 @@ document.addEventListener('click', function(e){
       var arrW = kb ? allW.filter(function(q){ return q.kind === kb; }) : allW;
       var wl = document.getElementById('wrongList');
       if (wl){
-        wl.innerHTML = arrW.map(function(q){
-          return qitemHTML(q, { my: '', st: '错' + (mm[q.id].n || 1) + '次', stColor: 'var(--bad)' });
-        }).join('') || '<div class="empty"><p>该题型暂无错题</p></div>';
+        wl.innerHTML = arrW.map(function(q){ return wrongItemHTML(q, mm[q.id]); }).join('') || '<div class="empty"><p>该题型暂无错题</p></div>';
       }
     }
     return;
@@ -2067,6 +2085,12 @@ document.addEventListener('click', function(e){
     var m = wrongMap(), idl = Object.keys(m).filter(function(id){ return BY_ID[id]; });
     if (!idl.length){ toast('错题本是空的'); return; }
     newSession(shuffle(idl.slice()), { title: '错题重练' });
+    return;
+  }
+  if (act === 'rmwrong'){
+    dropWrong(t.getAttribute('data-id'));
+    renderWrong();
+    toast('已移出错题本');
     return;
   }
   if (act === 'clearWrong'){
