@@ -795,7 +795,9 @@ function renderHome(){
   '</div></div>' +
   '<div class="dim" style="margin-top:18px;line-height:1.9">' +
     '快捷键：A–D / 1–4 选项，Enter 提交，← → 切题，Esc 暂离（进度会保存）。<br>' +
-    '题库来源：2024.4 市政考试题库（单选 315 · 多选 6 · 填空 90 · 简答 65）。作答记录只存在你自己这台设备的浏览器里。' +
+    '题库来源：2024.4 市政考试题库（单选 ' + COUNT.single + ' · 多选 ' + COUNT.multi +
+      ' · 填空 ' + COUNT.blank + ' · 简答 ' + COUNT.essay + '）。作答记录只存在你自己这台设备的浏览器里。<br>' +
+    '版本 <span id="buildStamp">2026-11-13 12:49</span>' +
   '</div>';
 }
 
