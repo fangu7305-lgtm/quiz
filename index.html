@@ -863,7 +863,7 @@ function renderHome(){
     '快捷键：A–D / 1–4 选项，Enter 提交，← → 切题，Esc 暂离（进度会保存）。<br>' +
     '题库来源：2024.4 市政考试题库（单选 ' + COUNT.single + ' · 多选 ' + COUNT.multi +
       ' · 填空 ' + COUNT.blank + ' · 简答 ' + COUNT.essay + '）。作答记录只存在你自己这台设备的浏览器里。<br>' +
-    '版本 <span id="buildStamp">2026-11-13 14:38</span>' +
+    '版本 <span id="buildStamp">2026-11-13 14:42</span>' +
   '</div>';
 }
 
@@ -1393,7 +1393,8 @@ var EXAM_PRESETS = {
   /* 模拟考试：均衡配比（约 24 + 35 + 40 ≈ 100 分），不照抄某一年的卷子 */
   latest: {
     name: '模拟考试',
-    desc: '选择 12 + 填空 13 + 问答 5',
+    desc: '选择 12 + 填空约 13 + 问答 5',
+    blankTarget: 35,
     sections: [
       { kind: 'single', label: '一、选择题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
       { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
@@ -1403,7 +1404,8 @@ var EXAM_PRESETS = {
   /* 2025下半年：按该卷 18:50:32 的题型占比换算（填空 1 空 1 分，故题量放大） */
   h2025: {
     name: '2025下半年',
-    desc: '选择 9 + 填空 18 + 问答 5',
+    desc: '选择 9 + 填空约 18 + 问答 5',
+    blankTarget: 48,
     sections: [
       { kind: 'single', label: '一、选择题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2] },
       { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
@@ -1453,7 +1455,8 @@ function rebuildDraft(){
       minutes: EXAM_MINUTES, pass: EXAM_PASS,
       total: sectionsTotal(pre.sections),
       sections: pre.sections.map(function(s){
-        return { kind: s.kind, label: s.label, weights: s.weights.slice(), count: s.weights.length };
+        return { kind: s.kind, label: s.label, weights: s.weights.slice(), count: s.weights.length,
+                 target: pre.blankTarget || null, blankKind: s.kind === 'blank' };
       })
     };
   }
@@ -1499,6 +1502,17 @@ function drawByKind(kind, n){
   }
   return picked;
 }
+/* 填空题：抽到“空数合计接近目标分”为止（每空 1 分），让填空小计稳定，不忽大忽小 */
+function drawBlanksToTarget(target){
+  var pool = drawByKind('blank', 60);
+  var picked = [], sum = 0;
+  for (var i = 0; i < pool.length && sum < target; i++){
+    var c = pool[i].answers.length;
+    picked.push(pool[i]);
+    sum += c;
+  }
+  return { qs: picked, sum: sum };
+}
 
 function startExam(){
   if (!S.examDraft) rebuildDraft();
@@ -1511,13 +1525,34 @@ function startExam(){
       });
     });
   } else {
-    draft.sections.forEach(function(sec){
-      drawByKind(sec.kind, sec.weights.length).forEach(function(q, i){
-        // 填空题统一按“1 空 1 分”，分值 = 该题空数
-        var sc = sec.kind === 'blank' ? q.answers.length : sec.weights[i];
-        items.push({ id: q.id, section: sec.label, score: sc });
+    /* 结构预设：选择/填空按规则算分，问答题吃剩余分值，保证卷面正好 100 分 */
+    var drawn = draft.sections.map(function(sec){
+      if (sec.kind === 'blank' && sec.target){
+        var r = drawBlanksToTarget(sec.target);
+        return { sec: sec, qs: r.qs };
+      }
+      return { sec: sec, qs: drawByKind(sec.kind, sec.weights.length) };
+    });
+    var base = 0, essaySec = null, essayQs = [];
+    drawn.forEach(function(d){
+      if (d.sec.kind === 'essay'){ essaySec = d.sec; essayQs = d.qs; return; }
+      d.qs.forEach(function(q, i){
+        var sc = d.sec.kind === 'blank' ? q.answers.length : d.sec.weights[i];
+        base += sc;
+        items.push({ id: q.id, section: d.sec.label, score: sc });
       });
     });
+    if (essaySec && essayQs.length){
+      var need = Math.max(essayQs.length * 2, 100 - base);
+      var orig = essaySec.weights.slice(0, essayQs.length);
+      var osum = orig.reduce(function(a, b){ return a + b; }, 0) || 1;
+      var allocs = orig.map(function(w){ return Math.max(2, Math.round(w / osum * need * 2) / 2); });
+      var diff = Math.round((need - allocs.reduce(function(a, b){ return a + b; }, 0)) * 2) / 2;
+      allocs[allocs.length - 1] = Math.max(2, allocs[allocs.length - 1] + diff);
+      essayQs.forEach(function(q, i){
+        items.push({ id: q.id, section: essaySec.label, score: allocs[i] });
+      });
+    }
   }
   pushRecent(items.map(function(x){ return x.id; }));
   var meta = {};
@@ -1691,17 +1726,19 @@ function renderExamIntro(){
         '<span class="dim num" style="text-align:right">按空计</span>' +
         '<span class="sc">' + (s.exact ? '' : '约 ') + est + ' 分</span></div>';
     }
+    if (s.kind === 'essay' && !s.exact){
+      return '<div class="exrow"><span>' + s.label + ' · ' + w.length + ' 题（按剩余分值配平）</span>' +
+        '<span class="dim num" style="text-align:right">配平</span>' +
+        '<span class="sc">约 ' + Math.max(w.length * 2, Math.round((100 - 24 - avgBlank() * 13) * 10) / 10) + ' 分</span></div>';
+    }
     var desc = uniq.length === 1 ? '每题 ' + uniq[0] + ' 分' : '按 ' + w.join('/') + ' 分';
     return '<div class="exrow"><span>' + s.label + ' · ' + w.length + ' 题（' + desc + '）</span>' +
       '<span class="dim num" style="text-align:right">小计</span>' +
       '<span class="sc">' + sum + ' 分</span></div>';
   }).join('');
   var isPaper = S.examSel.type === 'paper';
-  var showTotal = isPaper ? Math.round(d.total * 10) / 10
-    : Math.round((d.sections.reduce(function(a, s){
-        return a + (s.kind === 'blank' ? s.weights.length * avgBlank() : s.weights.reduce(function(x, y){ return x + y; }, 0));
-      }, 0)) * 10) / 10;
-  var totalLabel = isPaper ? '' : '约 ';
+  var showTotal = isPaper ? Math.round(d.total * 10) / 10 : 100;
+  var totalLabel = '';
 
   main.innerHTML =
   '<div class="hero"><div><h1>模拟考试</h1>' +
