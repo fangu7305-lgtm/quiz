@@ -863,7 +863,7 @@ function renderHome(){
     '快捷键：A–D / 1–4 选项，Enter 提交，← → 切题，Esc 暂离（进度会保存）。<br>' +
     '题库来源：2024.4 市政考试题库（单选 ' + COUNT.single + ' · 多选 ' + COUNT.multi +
       ' · 填空 ' + COUNT.blank + ' · 简答 ' + COUNT.essay + '）。作答记录只存在你自己这台设备的浏览器里。<br>' +
-    '版本 <span id="buildStamp">2026-11-13 14:28</span>' +
+    '版本 <span id="buildStamp">2026-11-13 14:38</span>' +
   '</div>';
 }
 
@@ -1390,21 +1390,23 @@ function paintBrowseList(){
    填空题一律「1 空 1 分」，所以卷面总分由抽到的题目决定 */
 var EXAM_MINUTES = 90, EXAM_PASS = 60;
 var EXAM_PRESETS = {
+  /* 模拟考试：均衡配比（约 24 + 35 + 40 ≈ 100 分），不照抄某一年的卷子 */
   latest: {
     name: '模拟考试',
-    desc: '2026 上半年比例',
+    desc: '选择 12 + 填空 13 + 问答 5',
     sections: [
-      { kind: 'single', label: '一、选择题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
-      { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
-      { kind: 'essay', label: '三、问答题', weights: [5, 6, 8, 8, 9, 10] }
+      { kind: 'single', label: '一、选择题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
+      { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
+      { kind: 'essay', label: '三、问答题', weights: [8, 8, 8, 8, 8] }
     ]
   },
+  /* 2025下半年：按该卷 18:50:32 的题型占比换算（填空 1 空 1 分，故题量放大） */
   h2025: {
     name: '2025下半年',
-    desc: '选择 9 题 + 填空 + 问答 32',
+    desc: '选择 9 + 填空 18 + 问答 5',
     sections: [
       { kind: 'single', label: '一、选择题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2] },
-      { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
+      { kind: 'blank', label: '二、填空题', weights: [2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2] },
       { kind: 'essay', label: '三、问答题', weights: [8, 8, 8, 4, 4] }
     ]
   }
@@ -1463,6 +1465,41 @@ function remainOf(ses){
 }
 function examRemain(){ return remainOf(S.session); }
 
+/* 抽题：避开最近两场考过的题（更早的题可以再次出现），保证连续几场不重样 */
+var RECENT_EXAMS = 2;          // 避开的最近场次数量
+var RECENT_KEEP = 6;           // 本地最多保留几场的记录
+function recentExams(){
+  var r = LS.get('szq.recent', []);
+  if (!Array.isArray(r)) return [];
+  // 兼容早期版本：纯 id 数组当作一场
+  if (r.length && typeof r[0] === 'string') return [{ t: Date.now(), ids: r }];
+  return r.filter(function(x){ return x && Array.isArray(x.ids); });
+}
+function avoidSet(){
+  var set = {};
+  recentExams().slice(0, RECENT_EXAMS).forEach(function(e){
+    e.ids.forEach(function(id){ set[id] = 1; });
+  });
+  return set;
+}
+function pushRecent(ids){
+  var list = recentExams();
+  list.unshift({ t: Date.now(), ids: ids.slice() });
+  LS.set('szq.recent', list.slice(0, RECENT_KEEP));
+}
+function drawByKind(kind, n){
+  var pool = ALL.filter(function(q){ return q.kind === kind; });
+  var avoid = avoidSet();
+  var fresh = shuffle(pool.filter(function(q){ return !avoid[q.id]; }));
+  var picked = fresh.slice(0, n);
+  if (picked.length < n){
+    // 池子不够时，才从最近考过的题里补
+    var fallback = shuffle(pool.filter(function(q){ return avoid[q.id]; }));
+    picked = picked.concat(fallback.slice(0, n - picked.length));
+  }
+  return picked;
+}
+
 function startExam(){
   if (!S.examDraft) rebuildDraft();
   var draft = S.examDraft, items = [];
@@ -1475,14 +1512,14 @@ function startExam(){
     });
   } else {
     draft.sections.forEach(function(sec){
-      var pool = ALL.filter(function(q){ return q.kind === sec.kind; });
-      shuffle(pool.slice()).slice(0, sec.weights.length).forEach(function(q, i){
+      drawByKind(sec.kind, sec.weights.length).forEach(function(q, i){
         // 填空题统一按“1 空 1 分”，分值 = 该题空数
         var sc = sec.kind === 'blank' ? q.answers.length : sec.weights[i];
         items.push({ id: q.id, section: sec.label, score: sc });
       });
     });
   }
+  pushRecent(items.map(function(x){ return x.id; }));
   var meta = {};
   items.forEach(function(x){ meta[x.id] = { section: x.section, score: x.score }; });
   var totalScore = items.reduce(function(a, x){ return a + x.score; }, 0);
